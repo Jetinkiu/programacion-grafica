@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Pixel Art Challenge con Robot</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: #111;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    color: #cfcfcf;
+    font-family: system-ui, sans-serif;
+  }
+  #scoreboard {
+    color: #0ee;
+    font-size: 18px;
+    margin: 12px 0;
+    text-align: center;
+  }
+  #container {
+    display: flex;
+    gap: 10px;
+    background: #0b0b0b;
+    padding: 10px;
+    border: 2px solid #0ee;
+    border-radius: 8px;
+  }
+  canvas {
+    image-rendering: pixelated;
+    border-radius: 6px;
+    background: #fff;
+  }
+  #palette {
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    justify-content: center;
+  }
+  .colorBox {
+    width: 24px;
+    height: 24px;
+    cursor: pointer;
+    border: 2px solid #333;
+  }
+  .selectedColor {
+    border: 2px solid yellow;
+  }
+</style>
+</head>
+<body>
+<div id="scoreboard">
+  Jugador: <span id="playerScore">0</span> | Robot: <span id="robotScore">0</span> / Objetivo: <span id="goalScore">0</span>
+</div>
+<div id="container">
+  <canvas id="gridCanvas"></canvas>
+  <canvas id="glcanvas"></canvas>
+</div>
+<div id="palette"></div>
+
+<script>
+/* Aquí definimos el código del vértice (vertex shader) en GLSL ES 3.00. Este shader se ejecuta en la GPU para cada vértice del modelo 3D. 
+   Toma las posiciones de los vértices (a_pos) y coordenadas de textura (a_uv), y las pasa al fragment shader pasando v_uv. 
+   Luego, transforma la posición del vértice a coordenadas de clip (de -1 a 1) para que cubra toda la pantalla, sin perspectiva (z=0, w=1). 
+   WebGL usa esto para dibujar primitivas como triángulos que forman un quad (rectángulo) que muestra la textura completa. */
+const vs = `#version 300 es
+precision highp float;
+in vec2 a_pos;
+in vec2 a_uv;
+out vec2 v_uv;
+void main(){ v_uv=a_uv; gl_Position=vec4(a_pos,0.0,1.0);}`;
+
+/* Aquí está el código del fragmento (fragment shader) en GLSL ES 3.00. Este se ejecuta en la GPU para cada píxel de la imagen final. 
+   Muestrea la textura (u_tex) en las coordenadas v_uv y asigna el color resultante a outColor. 
+   Como usamos filtro NEAREST, preserva los píxeles nítidos sin suavizado, ideal para pixel art. 
+   WebGL procesa miles de fragmentos en paralelo para renderizar la imagen rápidamente. */
+const fs = `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 outColor;
+void main(){ outColor=texture(u_tex,v_uv);}`;
+
+function hexToRGBA(hex){
+  if(!hex) return [0,0,0,255];
+  if(hex[0]==='#') hex=hex.slice(1);
+  if(hex.length===3) hex=hex.split('').map(c=>c+c).join('');
+  return [parseInt(hex.slice(0,2),16),parseInt(hex.slice(2,4),16),parseInt(hex.slice(4,6),16),255];
+}
+function compileShader(gl, src, type){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  /* En WebGL, compilar un shader implica cargar el código fuente GLSL en la GPU y compilarlo. 
+     Si hay error, gl.getShaderInfoLog da detalles para depurar. Esto prepara el shader para enlazarlo al programa. */
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error("Shader compile error: "+gl.getShaderInfoLog(s)); return s;}
+
+function createProgram(gl, vsSrc, fsSrc){ const vs=compileShader(gl,vsSrc,gl.VERTEX_SHADER); const fs=compileShader(gl,fsSrc,gl.FRAGMENT_SHADER);
+  /* Crear un programa en WebGL une el vertex y fragment shader. gl.attachShader los agrega, y gl.linkProgram los conecta 
+     para que la GPU pueda ejecutar el pipeline: vértices -> rasterización -> fragmentos. 
+     Verificamos con gl.getProgramParameter si el enlace fue exitoso. */
+  const p=gl.createProgram(); gl.attachShader(p,vs); gl.attachShader(p,fs); gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error("Program link error: "+gl.getProgramInfoLog(p)); return p;
+}
+
+async function main(){
+  const canvas=document.getElementById('glcanvas');
+  const gridCanvas=document.getElementById('gridCanvas');
+  /* Obtenemos el contexto WebGL2 del canvas. WebGL2 es una API que permite programar la GPU directamente desde JavaScript 
+     para renderizado 3D/2D acelerado. antialias:false evita suavizado para mantener píxeles cuadrados. 
+     Si no está disponible, el navegador no soporta WebGL2 (basado en OpenGL ES 3.0). */
+  const gl=canvas.getContext('webgl2',{antialias:false});
+  if(!gl){ alert("WebGL2 no disponible"); return; }
+
+  /* Creamos y enlazamos el programa shader como se explicó antes. */
+  const program=createProgram(gl,vs,fs);
+  /* Definimos vértices para un quad que cubre la pantalla: posiciones en (-1,-1) a (1,1), y UVs de (0,0) a (1,1) para mapear la textura. 
+     WebGL usa buffers para enviar datos a la GPU: VBO para vértices, VAO para configurar atributos. */
+  const vertices=new Float32Array([-1,-1,0,1, 1,-1,1,1, -1,1,0,0, 1,1,1,0]);
+  const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+  const vbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vbo); gl.bufferData(gl.ARRAY_BUFFER,vertices,gl.STATIC_DRAW);
+  /* Configuramos atributos: a_pos para posiciones, a_uv para coordenadas de textura. gl.vertexAttribPointer dice cómo leer el buffer. 
+     La GPU usa esto para procesar vértices en paralelo. */
+  const a_pos=gl.getAttribLocation(program,'a_pos'); const a_uv=gl.getAttribLocation(program,'a_uv');
+  gl.enableVertexAttribArray(a_pos); gl.vertexAttribPointer(a_pos,2,gl.FLOAT,false,16,0);
+  gl.enableVertexAttribArray(a_uv); gl.vertexAttribPointer(a_uv,2,gl.FLOAT,false,16,8);
+  /* IBO para índices de triángulos: divide el quad en dos triángulos para renderizar eficientemente. */
+  const ibo=gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ibo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array([0,1,2,2,1,3]),gl.STATIC_DRAW);
+
+  let imgSpec;
+  try{
+
+    const FOLDER_PATH = 'pixel_art_json';  // carpeta donde están los JSON
+const params = new URLSearchParams(window.location.search);
+const fileName = params.get('img');    // obtiene "ancient.json", etc.
+
+    const res = await fetch(`${FOLDER_PATH}/${fileName}`);
+    const json = await res.json();
+    imgSpec={width:json[0].length,height:json.length,rawJSON:json};
+    /* Convertimos el JSON de colores hex a bytes RGBA para la textura. WebGL texturas usan canales RGBA (0-255). */
+    const data=new Uint8Array(imgSpec.width*imgSpec.height*4);
+    let idx=0;
+    for(let y=0;y<imgSpec.height;y++){
+      for(let x=0;x<imgSpec.width;x++){
+        const [r,g,b,a]=hexToRGBA(json[y][x]);
+        data[idx++]=r; data[idx++]=g; data[idx++]=b; data[idx++]=a;
+      }
+    }
+    imgSpec.data=data;
+  }catch(err){ console.error(err); alert("Error cargando JSON"); return; }
+
+  const pixelW=imgSpec.width, pixelH=imgSpec.height;
+
+  // ---------- Texture ----------
+  /* Creamos una textura 2D en la GPU. gl.texImage2D sube los datos RGBA al VRAM. 
+     Configuramos filtros NEAREST para pixel art nítido (sin interpolación), y WRAP CLAMP para evitar repetición. 
+     UNPACK_FLIP_Y_WEBGL=false porque nuestro JSON ya está orientado correctamente. 
+     La textura se muestrea en el fragment shader para colorear cada píxel. */
+  const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,pixelW,pixelH,0,gl.RGBA,gl.UNSIGNED_BYTE,imgSpec.data);
+
+  // ---------- Score ----------
+  let playerScore=0, robotScore=0;
+  const goalScore=imgSpec.rawJSON.flat().filter(c=>c.toLowerCase()!=='#ffffff').length;
+  document.getElementById('goalScore').textContent=goalScore;
+  function updateScore(){ 
+    document.getElementById('playerScore').textContent=playerScore;
+    document.getElementById('robotScore').textContent=robotScore;
+  }
+
+  // ---------- Palette ----------
+  let selectedColor=null;
+  const uniqueColors=Array.from(new Set(imgSpec.rawJSON.flat().filter(c=>c.toLowerCase()!=='#ffffff')));
+  const paletteDiv=document.getElementById('palette');
+  uniqueColors.forEach(color=>{
+    const box=document.createElement('div');
+    box.className='colorBox'; box.style.background=color;
+    box.addEventListener('click',()=>{ selectedColor=color; document.querySelectorAll('.colorBox').forEach(b=>b.classList.remove('selectedColor')); box.classList.add('selectedColor'); });
+    paletteDiv.appendChild(box);
+  });
+
+  // ---------- Resize ----------
+  function resizeCanvas(){
+    const fixedHeight=600;
+    const aspect=pixelW/pixelH;
+    const width=fixedHeight*aspect;
+    canvas.width=width; canvas.height=fixedHeight;
+    gridCanvas.width=width; gridCanvas.height=fixedHeight;
+    canvas.style.width=width+'px'; canvas.style.height=fixedHeight+'px';
+    gridCanvas.style.width=width+'px'; gridCanvas.style.height=fixedHeight+'px';
+    /* Ajustamos el viewport de WebGL para que coincida con el tamaño del canvas, asegurando que la textura se dibuje a escala. */
+    gl.viewport(0,0,canvas.width,canvas.height);
+    drawGrid(); drawReferenceLines(); render();
+  }
+  window.addEventListener('resize',resizeCanvas);
+  resizeCanvas();
+
+  // ---------- Draw reference lines ----------
+  function drawReferenceLines(){
+    const ctx=gridCanvas.getContext('2d');
+    const cellW=gridCanvas.width/pixelW; const cellH=gridCanvas.height/pixelH;
+    ctx.strokeStyle='#ccc'; ctx.lineWidth=1;
+    for(let x=0;x<=pixelW;x++){ ctx.beginPath(); ctx.moveTo(x*cellW,0); ctx.lineTo(x*cellW,gridCanvas.height); ctx.stroke(); }
+    for(let y=0;y<=pixelH;y++){ ctx.beginPath(); ctx.moveTo(0,y*cellH); ctx.lineTo(gridCanvas.width,y*cellH); ctx.stroke(); }
+  }
+  function drawGrid(){
+    const ctx=gridCanvas.getContext('2d');
+    ctx.fillStyle='#fff'; ctx.fillRect(0,0,gridCanvas.width,gridCanvas.height);
+    drawReferenceLines();
+  }
+
+  /* Función render: Limpia el canvas WebGL con negro, activa el programa, bindea VAO y textura, setea uniform u_tex a la unidad 0, 
+     y dibuja los triángulos. La GPU procesa todo en paralelo: vertex shader transforma vértices, fragment shader texturiza píxeles. 
+     Esto muestra la imagen de referencia del pixel art de forma eficiente, escalable a imágenes grandes sin lag en CPU. */
+  function render(){ gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT); gl.useProgram(program); gl.bindVertexArray(vao);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tex);
+    gl.uniform1i(gl.getUniformLocation(program,'u_tex'),0); gl.drawElements(gl.TRIANGLES,6,gl.UNSIGNED_SHORT,0);
+  }
+
+  // ---------- Track painted pixels ----------
+  const painted = Array.from({length:pixelH},()=>Array(pixelW).fill(false));
+
+  // ---------- Player click ----------
+  gridCanvas.addEventListener('click',e=>{
+    if(!selectedColor) return;
+    const rect=gridCanvas.getBoundingClientRect();
+    const x=Math.floor((e.clientX-rect.left)/(gridCanvas.width/pixelW));
+    const y=Math.floor((e.clientY-rect.top)/(gridCanvas.height/pixelH));
+    if(painted[y][x]) return;
+    const correctColor=imgSpec.rawJSON[y][x];
+    if(selectedColor.toLowerCase()!==correctColor.toLowerCase()) return;
+    const ctx=gridCanvas.getContext('2d');
+    const cellW=gridCanvas.width/pixelW; const cellH=gridCanvas.height/pixelH;
+    ctx.fillStyle=selectedColor;
+    ctx.fillRect(x*cellW,y*cellH,cellW,cellH);
+    ctx.strokeStyle='#ccc'; ctx.strokeRect(x*cellW,y*cellH,cellW,cellH);
+    painted[y][x]=true; playerScore++; updateScore();
+    checkEndGame();
+  });
+
+  // ---------- Robot painting ----------
+  function robotPaint(){
+    const unpainted=[];
+    for(let y=0;y<pixelH;y++){
+      for(let x=0;x<pixelW;x++){
+        if(!painted[y][x] && imgSpec.rawJSON[y][x].toLowerCase()!=='#ffffff') unpainted.push([x,y]);
+      }
+    }
+    if(unpainted.length===0) return;
+    const [x,y]=unpainted[Math.floor(Math.random()*unpainted.length)];
+    const color=imgSpec.rawJSON[y][x];
+    const ctx=gridCanvas.getContext('2d');
+    const cellW=gridCanvas.width/pixelW; const cellH=gridCanvas.height/pixelH;
+    ctx.fillStyle=color; ctx.fillRect(x*cellW,y*cellH,cellW,cellH);
+    ctx.strokeStyle='#ccc'; ctx.strokeRect(x*cellW,y*cellH,cellW,cellH);
+    painted[y][x]=true; robotScore++; updateScore();
+    checkEndGame();
+    if(playerScore+robotScore<goalScore){
+      setTimeout(robotPaint, Math.random()*2500);
+    }
+  }
+  setTimeout(robotPaint, Math.random()*2500);
+
+  // ---------- End game ----------
+function checkEndGame(){
+  if(playerScore + robotScore >= goalScore){
+    let winner = '';
+    if(playerScore > robotScore) winner = '¡Ganaste tú!';
+    else if(playerScore < robotScore) winner = '¡El robot gana!';
+    else winner = '¡Empate!';
+
+        alert(`Juego terminado
+        Jugador: ${playerScore}
+        Robot: ${robotScore}
+        Objetivo: ${goalScore}
+        Ganador: ${winner}`);
+    }
+}
+
+
+}
+
+main().catch(err=>{ console.error(err); alert('Error: '+err.message); });
+</script>
+</body>
+</html>
