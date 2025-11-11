@@ -1,0 +1,481 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+      <title>Textura 2D en WebGL 2.0</title>
+      <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+</head>
+<body>
+      <title>Textura 2D en WebGL 2.0</title>
+      <canvas id="webglcanvas" style="border: none;" width="500" height="500" style="border: 2px solid black;"></canvas>
+      <img src="mario-removebg.png" id="imagenTextura" hidden />
+      <img src="road.jpg" id="imagenCity" hidden />
+
+      <script id="vs" type="vertex">
+        #version 300 es
+        precision mediump float;
+        uniform mat4 uMatrizProyeccion;
+        uniform mat4 uMatrizVista;
+        uniform mat4 uMatrizModelo;
+        uniform mat4 uMatrizTextura;
+        layout(location = 0) in vec2 aVertices;
+        layout(location = 1) in vec2 aCoordenadasDeTextura;
+        out vec2 vCoordenadasDeTextura;
+        void main() {
+            vCoordenadasDeTextura  = (uMatrizTextura * vec4(aCoordenadasDeTextura, 0.0, 1.0)).xy;
+            gl_Position = uMatrizProyeccion * uMatrizVista * uMatrizModelo * vec4(aVertices, 0.0, 1.0);
+        }
+      </script>
+
+      <script id="fs" type="fragment">
+        #version 300 es
+        precision mediump float;
+        uniform sampler2D uUnidadDeTextura;
+        in vec2 vCoordenadasDeTextura;
+        out vec4 color;
+        void main() {
+            color = texture(uUnidadDeTextura, vCoordenadasDeTextura);
+            // Descarta píxeles completamente transparentes
+            if (color.a < 0.1) {
+                discard;
+            }
+        }
+      </script>
+	
+      <script>
+        "use strict";
+
+        /***************************************************************************/
+        /* Transformaciones mediante matrices                                      */
+        /***************************************************************************/
+
+        /* Convierte de grados a radianes */
+        function toRadians(grados) {
+          return grados * Math.PI / 180;
+        };
+
+        /* Matriz Identidad */
+        function identidad(r) {
+          r[0] = 1; r[4] = 0; r[ 8] = 0; r[12] = 0;
+          r[1] = 0; r[5] = 1; r[ 9] = 0; r[13] = 0;
+          r[2] = 0; r[6] = 0; r[10] = 1; r[14] = 0;
+          r[3] = 0; r[7] = 0; r[11] = 0; r[15] = 1;
+        }
+
+        /* Traslación - glTranslatef */
+        function traslacion(matriz, tx, ty, tz) {
+          let r = new Array(16);
+          r[0] = 1; r[4] = 0; r[ 8] = 0; r[12] = tx;
+          r[1] = 0; r[5] = 1; r[ 9] = 0; r[13] = ty;
+          r[2] = 0; r[6] = 0; r[10] = 1; r[14] = tz;
+          r[3] = 0; r[7] = 0; r[11] = 0; r[15] =  1;
+          multiplica(matriz, matriz, r);
+        }
+
+        /* Escalación - glScalef */
+        function escalacion(matriz, sx, sy, sz) { 
+          let r = new Array(16);
+          r[0] = sx; r[4] =  0; r[ 8] =  0; r[12] =  0;
+          r[1] =  0; r[5] = sy; r[ 9] =  0; r[13] =  0;
+          r[2] =  0; r[6] =  0; r[10] = sz; r[14] =  0;
+          r[3] =  0; r[7] =  0; r[11] =  0; r[15] =  1;
+          multiplica(matriz, matriz, r);
+        }
+
+        /* Rotación sobre X - glRotatef */
+        function rotacionX(matriz, theta){
+          let r = new Array(16);
+          let c = Math.cos(toRadians(theta));
+          let s = Math.sin(toRadians(theta));
+          r[0] =  1; r[4] =  0; r[ 8] =  0; r[12] = 0;
+          r[1] =  0; r[5] =  c; r[ 9] = -s; r[13] = 0;
+          r[2] =  0; r[6] =  s; r[10] =  c; r[14] = 0;
+          r[3] =  0; r[7] =  0; r[11] =  0; r[15] = 1;
+          multiplica(matriz, matriz, r); 
+        }
+
+        /* Rotación sobre Y - glRotatef */
+        function rotacionY(matriz, theta){
+          let r = new Array(16);
+          let c = Math.cos(toRadians(theta));
+          let s = Math.sin(toRadians(theta));
+          r[0] =  c; r[4] =  0; r[ 8] =  s; r[12] = 0;
+          r[1] =  0; r[5] =  1; r[ 9] =  0; r[13] = 0;
+          r[2] = -s; r[6] =  0; r[10] =  c; r[14] = 0;
+          r[3] =  0; r[7] =  0; r[11] =  0; r[15] = 1;
+          multiplica(matriz, matriz, r);
+        }
+	
+        /* Rotación sobre Z - glRotatef */
+        function rotacionZ(matriz, theta){
+          let r = new Array(16);
+          let c = Math.cos(toRadians(theta));
+          let s = Math.sin(toRadians(theta));
+          r[0] =  c; r[4] = -s; r[ 8] =  0; r[12] = 0;
+          r[1] =  s; r[5] =  c; r[ 9] =  0; r[13] = 0;
+          r[2] =  0; r[6] =  0; r[10] =  1; r[14] = 0;
+          r[3] =  0; r[7] =  0; r[11] =  0; r[15] = 1;
+          multiplica(matriz, matriz, r);
+        }
+
+        /* Proyección Paralela - glOrtho */
+        function ortho(r, izq, der, abj, arr, cerca, lejos) {
+          r[0] = 2/(der - izq); r[4] =             0; r[ 8] =                  0; r[12] =         -(der + izq)/(der - izq);
+          r[1] =             0; r[5] = 2/(arr - abj); r[ 9] =                  0; r[13] =         -(arr + abj)/(arr - abj);
+          r[2] =             0; r[6] =             0; r[10] = -2/(lejos - cerca); r[14] = -(lejos + cerca)/(lejos - cerca);
+          r[3] =             0; r[7] =             0; r[11] =                  0; r[15] =                                1;
+        }
+
+        /* Multiplicación de matrices de 4 x 4 */
+        function multiplica(c, a, b) {
+          let r = new Array(16);
+          let i, j, k;
+          for (i = 0; i < 4; i++){
+            for (j = 0; j < 4; j++){
+              let s = 0;
+              for (k = 0; k < 4; k++)
+                s = s + a[i + k * 4] * b[k + j * 4];
+                r[i + j * 4] = s;
+              }
+            }
+          for (i = 0; i < 16; i++)
+            c[i] = r[i];
+        }
+
+        /* Variables globales */
+        let gl;
+        let programaID;
+        let textura;
+        let codigoDeTextura;
+        let codigoTexturaFondo;
+
+        /* Variables Uniformes */
+        let uMatrizProyeccion;
+        let uMatrizVista;
+        let uMatrizModelo;
+        let uUnidadDeTextura;
+        let uMatrizTextura;
+
+        /* Matrices */
+        let MatrizProyeccion = new Array(16);
+        let MatrizVista = new Array(16);
+        let MatrizModelo = new Array(16);
+        let MatrizTextura = new Array(16);
+
+        let rectanguloVAO;
+        let fondoVAO;
+        
+        let dt = 0;
+        let tx = -5;
+        let ty = 0;
+        let velocidadX = 0;
+        let velocidadY = 0;
+        const VELOCIDAD_MOVIMIENTO = 0.03;
+        
+        // Variables para controlar la fila del sprite
+        let filaActual = 0;
+        let totalFilas = 4;
+        let alturaFila = 1 / totalFilas;
+        let coord_textura;
+        
+        // Nueva variable para controlar la escala
+        let escala = 0.8;
+
+        function actualizarCoordenadasTextura() {
+          let y1 = filaActual * alturaFila;
+          let y2 = (filaActual + 1) * alturaFila;
+
+          coord_textura = [
+            0,   y1,     // 0 - esquina inferior izquierda
+            1/6, y1,     // 1 - esquina inferior derecha  
+            1/6, y2,     // 2 - esquina superior derecha
+            0,   y2,     // 3 - esquina superior izquierda
+          ];
+
+          // Actualizar el buffer de coordenadas de textura
+          gl.bindBuffer(gl.ARRAY_BUFFER, codigoCoordenadasDeTextura);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(coord_textura), gl.STATIC_DRAW);
+        }
+
+        function dibuja() {
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        // Dibujar el fondo primero
+        identidad(MatrizModelo);
+        gl.uniformMatrix4fv(uMatrizModelo, false, MatrizModelo);
+        
+        identidad(MatrizTextura);
+        gl.uniformMatrix4fv(uMatrizTextura, false, MatrizTextura);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.uniform1i(uUnidadDeTextura, 0);
+        gl.bindTexture(gl.TEXTURE_2D, codigoTexturaFondo);
+        
+        gl.bindVertexArray(fondoVAO);
+        gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+        gl.bindVertexArray(null);
+
+        // Actualizar posición del personaje según la velocidad
+        tx += velocidadX;
+        ty += velocidadY;
+        
+        // Limitar el movimiento dentro del área visible
+        // Límites horizontales
+        if (tx > 5) tx = 5;
+        if (tx < -5) tx = -5;
+        
+        // Límites verticales - específicos para ArrowUp y ArrowDown
+        // Límite superior (ArrowUp)
+        if (ty > 0.03) ty = 0.03;
+        // Límite inferior (ArrowDown)
+        if (ty < -3) ty = -3;
+
+        // Dibujar el personaje
+        identidad(MatrizModelo);
+        traslacion(MatrizModelo, tx, ty, 0);
+        // Aplicar la escala actual
+        escalacion(MatrizModelo, escala, escala, 1);
+        gl.uniformMatrix4fv(uMatrizModelo, false, MatrizModelo);
+
+        // Animación de textura solo cuando se mueve
+        if (velocidadX !== 0 || velocidadY !== 0) {
+            dt = dt + 1/6;
+        }
+
+        identidad(MatrizTextura);
+        traslacion(MatrizTextura, dt, 0, 0);
+        gl.uniformMatrix4fv(uMatrizTextura, false, MatrizTextura);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.uniform1i(uUnidadDeTextura, 0);
+        gl.bindTexture(gl.TEXTURE_2D, codigoDeTextura);
+        
+        gl.bindVertexArray(rectanguloVAO);
+        gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+        gl.bindVertexArray(null);
+
+        requestAnimationFrame(dibuja);
+        }
+
+        function manejarTeclado(evento) {
+          switch(evento.key) {
+            case "ArrowRight":
+              velocidadX = VELOCIDAD_MOVIMIENTO;
+              filaActual = 1; // Fila para movimiento hacia la derecha
+              actualizarCoordenadasTextura();
+              break;
+            case "ArrowLeft":
+              velocidadX = -VELOCIDAD_MOVIMIENTO;
+              filaActual = 2; // Fila para movimiento hacia la izquierda
+              actualizarCoordenadasTextura();
+              break;
+            case "ArrowUp":
+              velocidadY = VELOCIDAD_MOVIMIENTO;
+              console.log(velocidadY);
+              filaActual = 0; // Fila para movimiento hacia arriba
+              actualizarCoordenadasTextura();
+              // Reducir la escala en 1%
+              escala = Math.max(0.2, escala - 0.01); // Evitar escala negativa
+              break;
+            case "ArrowDown":
+              velocidadY = -VELOCIDAD_MOVIMIENTO;
+              filaActual = 3; // Fila para movimiento hacia abajo
+              actualizarCoordenadasTextura();
+              // Aumentar la escala en 1%
+              escala = Math.min(3.0, escala + 0.01); // Limitar escala máxima
+              break;
+          }
+        }
+
+        function detenerMovimiento(evento) {
+          switch(evento.key) {
+            case "ArrowRight":
+            case "ArrowLeft":
+              velocidadX = 0;
+              break;
+            case "ArrowUp":
+            case "ArrowDown":
+              velocidadY = 0;
+              break;
+          }
+        }
+
+        // Variables globales para los buffers
+        let codigoCoordenadasDeTextura;
+
+        function main() {
+          /***************************************************************************/
+          /* Paso 1: Se prepara el lienzo y se obtiene el contexto del WebGL.        */
+          /***************************************************************************/
+          let canvas = document.getElementById("webglcanvas");
+
+          gl = canvas.getContext("webgl2");
+          if (!gl) {
+             document.write("WebGL 2.0 no está disponible en tu navegador");
+             return;
+          }
+
+          /* Se define la ventana de despliegue */
+          gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+          /***************************************************************************/
+          /* Paso 2: Se crean, compilan y enlazan los programas Shader               */
+          /***************************************************************************/
+
+          /* Se compila el shader de vertice */
+          let shaderDeVertice = gl.createShader(gl.VERTEX_SHADER);
+          gl.shaderSource(shaderDeVertice, document.getElementById("vs").text.trim());
+          gl.compileShader(shaderDeVertice);
+
+          /* Se compila el shader de fragmento */
+          let shaderDeFragmento = gl.createShader(gl.FRAGMENT_SHADER);
+          gl.shaderSource(shaderDeFragmento, document.getElementById("fs").text.trim());
+          gl.compileShader(shaderDeFragmento);
+
+          /* Se enlaza ambos shader */
+          programaID = gl.createProgram();
+          gl.attachShader(programaID, shaderDeVertice); 
+          gl.attachShader(programaID, shaderDeFragmento);
+          gl.linkProgram(programaID);
+
+          /* Se instala el programa de shaders para utilizarlo */
+          gl.useProgram(programaID);
+
+          // Obtiene los ID de las variables de entrada de los shaders
+          uMatrizProyeccion = gl.getUniformLocation(programaID, "uMatrizProyeccion");
+          uMatrizVista = gl.getUniformLocation(programaID, "uMatrizVista");
+          uMatrizModelo = gl.getUniformLocation(programaID, "uMatrizModelo");
+          uUnidadDeTextura = gl.getUniformLocation(programaID, "uUnidadDeTextura");
+          uMatrizTextura = gl.getUniformLocation(programaID, "uMatrizTextura");
+
+          /***************************************************************************/
+          /* Paso 3: Se define la geometría y se almacenan en los buffers de memoria.*/
+          /***************************************************************************/
+
+          /* Coordenadas cartesianas (x, y) para el personaje */
+          let vertices = [
+            -3, -3, // 0
+             1, -3, // 1
+             1,  3, // 2
+            -3,  3, // 3
+          ];
+
+          /* Coordenadas cartesianas (x, y) para el fondo */
+          let verticesFondo = [
+            -5, -5, // 0
+             5, -5, // 1
+             5,  5, // 2
+            -5,  5, // 3
+          ];
+
+          /* Coordenadas de textura para el fondo */
+          let coord_textura_fondo = [
+            0, 0, // 0 - esquina inferior izquierda
+            1, 0, // 1 - esquina inferior derecha  
+            1, 1, // 2 - esquina superior derecha
+            0, 1, // 3 - esquina superior izquierda
+          ];
+
+          // Inicializar coordenadas de textura del personaje
+          actualizarCoordenadasTextura();
+
+          // Crear VAO para el personaje
+          rectanguloVAO = gl.createVertexArray();
+          gl.bindVertexArray(rectanguloVAO);
+
+          let codigoVertices = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, codigoVertices);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(0);
+          gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+          codigoCoordenadasDeTextura = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, codigoCoordenadasDeTextura);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(coord_textura), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(1);
+          gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+
+          gl.bindVertexArray(null);
+
+          // Crear VAO para el fondo
+          fondoVAO = gl.createVertexArray();
+          gl.bindVertexArray(fondoVAO);
+
+          let codigoVerticesFondo = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, codigoVerticesFondo);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verticesFondo), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(0);
+          gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+          let codigoCoordenadasDeTexturaFondo = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, codigoCoordenadasDeTexturaFondo);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(coord_textura_fondo), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(1);
+          gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+
+          gl.bindVertexArray(null);
+          gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+          /***************************************************************************/
+          /* Lee las Texturas                                                        */
+          /***************************************************************************/
+
+          // Textura del personaje
+          codigoDeTextura = gl.createTexture();
+          gl.bindTexture(gl.TEXTURE_2D, codigoDeTextura);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true); // Importante para transparencias
+          let imagen = document.getElementById("imagenTextura");
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imagen);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+          gl.bindTexture(gl.TEXTURE_2D, null);
+
+          // Textura del fondo
+          codigoTexturaFondo = gl.createTexture();
+          gl.bindTexture(gl.TEXTURE_2D, codigoTexturaFondo);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          let imagenFondo = document.getElementById("imagenCity");
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imagenFondo);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          gl.bindTexture(gl.TEXTURE_2D, null);
+
+          /***************************************************************************/
+          /* Configurar WebGL para transparencias                                    */
+          /***************************************************************************/
+          
+          // Habilitar mezcla (blending) para transparencias
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+          /***************************************************************************/
+          /* Paso 4: Se renderiza                                                    */
+          /***************************************************************************/
+
+          // Matriz de Proyección
+          ortho(MatrizProyeccion, -5, 5, -5, 5, -5, 5);
+          gl.uniformMatrix4fv(uMatrizProyeccion, false, MatrizProyeccion);
+
+          // Matriz de Vista
+          identidad(MatrizVista);
+          gl.uniformMatrix4fv(uMatrizVista, false, MatrizVista);          
+
+          // Configurar event listeners para el teclado
+          window.addEventListener('keydown', manejarTeclado);
+          window.addEventListener('keyup', detenerMovimiento);
+
+          gl.clearColor(1.0, 1.0, 1.0, 1.0);
+          dibuja();
+
+        }
+
+        /* Llama a main una vez que la página web se haya cargado. */
+        window.onload = main;
+
+      </script>
+</body>
+</html>
